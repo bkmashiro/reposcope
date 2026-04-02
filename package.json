@@ -11,8 +11,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "tsc",
+    "build": "rm -rf dist && tsc",
+    "prepublishOnly": "rm -rf dist && tsc",
     "test": "node --import tsx/esm --test test/**/*.test.ts"
   },
   "keywords": [
