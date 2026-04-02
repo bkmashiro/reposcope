@@ -1,0 +1,4 @@
+node_modules
+dist
+reposcope-report.html
+.DS_Store
