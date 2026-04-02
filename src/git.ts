@@ -10,6 +10,7 @@ export interface CommitData {
   subject: string
   parents: string[]
   branch?: string
+  files?: string[]
 }
 
 export interface FileChurn {
@@ -86,19 +87,34 @@ function clampLimit(limit?: number): number | undefined {
   return Math.max(1, Math.floor(limit))
 }
 
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase()
+}
+
+function normalizeDate(value: string): string {
+  const trimmed = value.trim()
+  const parsed = new Date(trimmed)
+  if (Number.isNaN(parsed.getTime())) {
+    return trimmed
+  }
+  return parsed.toISOString()
+}
+
 export function parseCommitLog(output: string): CommitData[] {
   return output
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [hash, shortHash, date, author, email, subject, parentString = ''] = line.split('|')
+      const [hash = '', shortHash = '', date = '', author = '', email = '', ...rest] = line.split('|')
+      const subject = rest.length > 1 ? rest.slice(0, -1).join('|') : (rest[0] ?? '')
+      const parentString = rest.length > 1 ? rest.at(-1) ?? '' : ''
       return {
         hash,
         shortHash,
-        date,
+        date: normalizeDate(date),
         author,
-        email,
+        email: normalizeEmail(email),
         subject,
         parents: parentString ? parentString.split(' ').filter(Boolean) : []
       }
@@ -112,8 +128,8 @@ export function parseContributorActivity(output: string): Map<string, Set<string
       continue
     }
     const [date, email] = line.split('|')
-    const key = email.trim()
-    const day = date.slice(0, 10)
+    const key = normalizeEmail(email)
+    const day = normalizeDate(date).slice(0, 10)
     if (!byEmail.has(key)) {
       byEmail.set(key, new Set())
     }
@@ -166,8 +182,9 @@ export function parseContributors(
   const commitToAuthor = new Map<string, { author: string; email: string }>()
 
   for (const commit of commits) {
-    commitToAuthor.set(commit.hash, { author: commit.author, email: commit.email })
-    const existing = stats.get(commit.email)
+    const emailKey = normalizeEmail(commit.email)
+    commitToAuthor.set(commit.hash, { author: commit.author, email: emailKey })
+    const existing = stats.get(emailKey)
     if (existing) {
       existing.commitCount += 1
       if (commit.date < existing.firstCommit) {
@@ -178,15 +195,15 @@ export function parseContributors(
       }
       continue
     }
-    stats.set(commit.email, {
+    stats.set(emailKey, {
       author: commit.author,
-      email: commit.email,
+      email: emailKey,
       commitCount: 1,
       insertions: 0,
       deletions: 0,
       firstCommit: commit.date,
       lastCommit: commit.date,
-      activeDays: activity.get(commit.email)?.size ?? 0
+      activeDays: activity.get(emailKey)?.size ?? 0
     })
   }
 
@@ -242,6 +259,25 @@ export function parseFileChurn(
   return [...stats.values()]
     .sort((a, b) => b.changeCount - a.changeCount || b.insertions + b.deletions - (a.insertions + a.deletions))
     .slice(0, limit)
+}
+
+function attachFilesToCommits(
+  commits: CommitData[],
+  numstat: Array<{ commit: string; insertions: number; deletions: number; file: string }>
+): CommitData[] {
+  const filesByCommit = new Map<string, Set<string>>()
+  for (const entry of numstat) {
+    if (!filesByCommit.has(entry.commit)) {
+      filesByCommit.set(entry.commit, new Set())
+    }
+    filesByCommit.get(entry.commit)?.add(entry.file)
+  }
+
+  for (const commit of commits) {
+    commit.files = [...(filesByCommit.get(commit.hash) ?? new Set())]
+  }
+
+  return commits
 }
 
 export function parseBlamePorcelain(output: string, file: string): BlameSummary {
@@ -352,6 +388,7 @@ export async function analyzeRepo(repoPath: string, options: AnalyzeOptions = {}
   const activity = parseContributorActivity(runGit(repoPath, ['log', '--format=%aI|%ae', '--all']))
   const numstatOutput = runGit(repoPath, ['log', '--all', '--diff-filter=ACMRT', '--numstat', '--format=%H'])
   const numstat = parseNumstat(numstatOutput)
+  attachFilesToCommits(commits, numstat)
   const contributors = parseContributors(commits, activity, numstat)
   const commitMap = new Map(commits.map((commit) => [commit.hash, commit]))
   const fileChurn = parseFileChurn(numstatOutput, commitMap)

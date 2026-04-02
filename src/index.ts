@@ -9,7 +9,9 @@ import chalk from 'chalk'
 import { Command } from 'commander'
 
 import { analyzeRepo } from './git.js'
+import { highlightMatch, searchCommits } from './search.js'
 import { serveReport } from './server.js'
+import { computeStats, formatStats } from './stats.js'
 import { generateReport } from './visualizer.js'
 
 const execFileAsync = promisify(execFile)
@@ -81,14 +83,40 @@ program
     const targetRepo = resolveRepoPath(repoPath)
     const data = await analyzeRepo(targetRepo, { limit: 1000 })
     console.log(`Repository: ${data.repoName}`)
-    printSummary(data)
-    const topContributor = data.contributors[0]
-    if (topContributor) {
-      console.log(`Top contributor: ${topContributor.author} (${topContributor.commitCount} commits)`)
+    console.log(formatStats(computeStats(data)))
+  })
+
+program
+  .command('search')
+  .argument('<query>', 'Search query')
+  .argument('[repo-path]', 'Path to git repository', '.')
+  .option('-f, --field <field>', 'Field to search: subject, author, file, all', 'all')
+  .option('--since <date>', 'Only include commits on or after this date')
+  .option('--until <date>', 'Only include commits on or before this date')
+  .option('-l, --limit <n>', 'Max results', (value) => Number.parseInt(value, 10), 10)
+  .action(async (
+    query: string,
+    repoPath: string,
+    options: { field: 'subject' | 'author' | 'file' | 'all'; since?: string; until?: string; limit: number }
+  ) => {
+    const targetRepo = resolveRepoPath(repoPath)
+    const data = await analyzeRepo(targetRepo, { limit: 1000 })
+    const results = searchCommits(data.commits, {
+      query,
+      field: options.field,
+      since: options.since,
+      until: options.until,
+      limit: options.limit
+    })
+
+    if (results.length === 0) {
+      console.log(`No matches found for "${query}".`)
+      return
     }
-    const hottestFile = data.fileChurn[0]
-    if (hottestFile) {
-      console.log(`Most changed file: ${hottestFile.file} (${hottestFile.changeCount} changes)`)
+
+    for (const result of results) {
+      const preview = highlightMatch(result.matchedValue, query)
+      console.log(`${result.commit.shortHash} ${result.commit.date} ${result.commit.author} [${result.matchedField}] ${preview}`)
     }
   })
 
